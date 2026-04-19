@@ -29,6 +29,7 @@ export class ReplService {
   private currentProviderId?: string;
   private abortController: AbortController | null = null;
   private keypressHandler: ((char: string | undefined, key: any) => void) | null = null;
+  private lastSigintTime = 0;
 
   // Interrupt & Restart state
   private pendingLineContent: string | null = null;
@@ -57,6 +58,14 @@ export class ReplService {
     });
 
     this.rl.on('SIGINT', () => {
+      const now = Date.now();
+      if (now - this.lastSigintTime < 1000) {
+        // Double Ctrl+C within 1 second → force exit
+        p.outro('Goodbye!');
+        process.exit(0);
+      }
+      this.lastSigintTime = now;
+
       if (this.abortController) {
         this.abortController.abort();
       } else {
@@ -84,9 +93,18 @@ export class ReplService {
     this.keypressHandler = (char: string | undefined, key: any) => {
       // Ctrl+C: always handle regardless of state (for aborting chat)
       if (key && key.ctrl && key.name === 'c') {
+        const now = Date.now();
+        if (now - this.lastSigintTime < 1000) {
+          // Double Ctrl+C within 1 second → force exit
+          p.outro('Goodbye!');
+          process.exit(0);
+        }
+        this.lastSigintTime = now;
+
         if (this.abortController) {
           this.abortController.abort();
-        } else if (this.isWaitingForInput) {
+        } else {
+          // Exit regardless of isWaitingForInput state
           p.outro('Goodbye!');
           process.exit(0);
         }
