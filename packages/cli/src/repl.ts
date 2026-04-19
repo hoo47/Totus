@@ -215,8 +215,8 @@ export class ReplService {
         if (await this.handleMetaCommand(text, options.agentId)) {
           const lowerText = text.toLowerCase();
           if (lowerText === '/model' || lowerText === '/compact') {
-            // Move up and clear 2 lines: the Inquirer remnants and the command input line (/model)
-            process.stdout.write('\x1b[1F\x1b[2K\x1b[1F\x1b[2K');
+            // Seamless UI: Move up to the command input line and clear everything below
+            process.stdout.write('\x1b[1F\x1b[1F\x1b[J');
           }
           continue;
         }
@@ -302,10 +302,9 @@ export class ReplService {
         }
       } catch (e: any) {
         if (e === REPROMPT) {
-          // Move cursor up and clear lines to avoid "You: You: You:" clutter.
-          // \x1b[1F moves to the beginning of the previous line, \x1b[2K clears it.
-          // We clear 2 lines: one for the Inquirer prompt line and one for the previous "You:" line.
-          process.stdout.write('\x1b[1F\x1b[2K\x1b[1F\x1b[2K');
+          // Seamless UI: Move up to the original "You:" line and clear everything below.
+          // This makes the transition feel like an in-place edit, matching Antigravity CLI feel.
+          process.stdout.write('\x1b[1F\x1b[1F\x1b[J');
           continue;
         }
         if (e?.code === 'ERR_USE_AFTER_CLOSE') {
