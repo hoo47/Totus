@@ -234,6 +234,12 @@ export class ReplService {
           });
 
           for await (const message of stream) {
+            // Capture conversationId from system events
+            if (message.type === 'system_event' && message.event === 'conversation_created') {
+              this.conversationId = message.conversationId;
+              continue;
+            }
+
             if (message.type === 'assistant') {
               if (!firstMessageReceived) {
                 s.stop('Response:');
@@ -374,7 +380,7 @@ export class ReplService {
         const choice = await search({
           message: 'Command:',
           source: async (term) => {
-            const commands = ['/help', '/tools', '/model', '/clear', '/exit', '/quit'];
+            const commands = ['/help', '/tools', '/model', '/compact', '/clear', '/exit', '/quit'];
             const filtered = term ? commands.filter(c => c.includes(term)) : commands;
             return filtered.map(c => ({ value: c }));
           }
@@ -501,6 +507,9 @@ export class ReplService {
       case '/model':
         await this.handleModelSwitch();
         return true;
+      case '/compact':
+        await this.handleCompact();
+        return true;
       case '/tools': {
         const tools = this.orchestrator.getAgentAvailableTools(agentId || 'coding-agent');
         console.log(chalk.yellow('\n🛠️  Available Tools for Current Agent:'));
@@ -513,11 +522,12 @@ export class ReplService {
       case '/help':
         console.log(chalk.cyan(`
 Available commands:
-  /help  - Show this help message
-  /model - Switch LLM provider and model
-  /tools - View available tools for the agent
-  /clear - Clear the terminal
-  /exit  - Exit the application
+  /help    - Show this help message
+  /model   - Switch LLM provider and model
+  /tools   - View available tools for the agent
+  /compact - Compact conversation events into a summary
+  /clear   - Clear the terminal
+  /exit    - Exit the application
         `));
         return true;
       default:
@@ -665,6 +675,107 @@ Available commands:
       configService.saveConfig(config);
 
       p.log.success(chalk.green(`현재 대화 모델이 성공적으로 변경되었습니다 => ${choice.model} (${choice.provider})`));
+    } catch (e) {
+      console.log(chalk.yellow('\n취소되었습니다. (Cancelled)'));
+    } finally {
+      // Recreate readline for clean state after inquirer interactions
+      this.createReadlineInterface();
+      this.setupKeypressHandler();
+      process.stdin.resume();
+    }
+  }
+
+  // ── Compact (uses same close/reopen pattern) ───────────────────
+
+  private async handleCompact(): Promise<void> {
+    if (!this.conversationId) {
+      p.log.warn(chalk.yellow('아직 대화가 시작되지 않았습니다. 먼저 대화를 진행해주세요.'));
+      return;
+    }
+
+    // Close readline to let inquirer take over stdin cleanly
+    this.rl.close();
+
+    try {
+      const { checkbox } = await import('@inquirer/prompts');
+
+      // Fetch all events for this conversation
+      const eventStore = this.orchestrator.getEventStore();
+      const events = await eventStore.getEvents(this.conversationId);
+
+      if (events.length < 2) {
+        p.log.warn(chalk.yellow('Compact할 이벤트가 충분하지 않습니다. (최소 2개)'));
+        return;
+      }
+
+      // Filter out already-compacted events and build display list
+      const selectableEvents = events.filter(e => !e.isCompacted);
+
+      if (selectableEvents.length < 2) {
+        p.log.warn(chalk.yellow('Compact 가능한 이벤트가 충분하지 않습니다.'));
+        return;
+      }
+
+      // Build choices for inquirer checkbox
+      const choices = selectableEvents.map(e => {
+        const role = e.role === 'user' ? '👤 user' : e.role === 'assistant' ? '🤖 asst' : `📎 ${e.role}`;
+        let preview: string;
+        if (typeof e.content.content === 'string') {
+          preview = e.content.content.replace(/\n/g, ' ').substring(0, 60);
+        } else {
+          preview = JSON.stringify(e.content.content).replace(/\n/g, ' ').substring(0, 60);
+        }
+        if (preview.length >= 60) preview += '...';
+
+        return {
+          name: `[${e.sequenceNumber}] ${role}: ${preview}`,
+          value: e.sequenceNumber,
+        };
+      });
+
+      p.log.info(chalk.cyan('처음과 끝 이벤트를 spacebar로 선택하세요 (정확히 2개):'));
+
+      const selected = await checkbox({
+        message: 'Compact 범위 선택 (spacebar로 시작/끝 선택, enter로 확인):',
+        choices,
+        required: true,
+      });
+
+      if (selected.length !== 2) {
+        p.log.warn(chalk.yellow(`정확히 2개를 선택해야 합니다. (${selected.length}개 선택됨)`));
+        return;
+      }
+
+      const fromSeq = Math.min(...selected);
+      const toSeq = Math.max(...selected);
+
+      // Count events in range
+      const eventsInRange = selectableEvents.filter(
+        e => e.sequenceNumber >= fromSeq && e.sequenceNumber <= toSeq
+      );
+
+      p.log.step(chalk.blue(`이벤트 ${fromSeq}~${toSeq} 범위 (${eventsInRange.length}개)를 compact합니다...`));
+
+      const s = p.spinner();
+      s.start('LLM Subagent가 요약을 생성하고 있습니다...');
+
+      try {
+        const summary = await this.orchestrator.compactConversation(
+          this.conversationId,
+          fromSeq,
+          toSeq,
+          this.currentProviderId,
+          this.currentModel,
+        );
+
+        s.stop('Compact 완료!');
+        p.log.success(chalk.green('📝 요약:'));
+        console.log(chalk.dim(summary));
+        console.log('');
+      } catch (err: any) {
+        s.stop('Compact 실패');
+        p.log.error(chalk.red(`Compact 오류: ${err.message}`));
+      }
     } catch (e) {
       console.log(chalk.yellow('\n취소되었습니다. (Cancelled)'));
     } finally {

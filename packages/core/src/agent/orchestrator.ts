@@ -5,7 +5,8 @@ import type { AgentPlugin, AgentConfig, AgentContext } from './types.js';
 import type { LLMProviderAdapter } from '../provider/adapter.js';
 import type { EventStore } from '../event-store/store.js';
 import type { CanUseToolFn, Tool } from '../tool/types.js';
-import type { InternalMessage } from '../types/messages.js';
+import type { InternalMessage, SystemEventMessage } from '../types/messages.js';
+import { LLMCompactionEngine } from '../event-store/compaction.js';
 import { DefaultProviderRegistry } from '../provider/index.js';
 import { DefaultToolRegistry } from '../tool/registry.js';
 import { query, type QueryOptions } from '../loop/query.js';
@@ -130,6 +131,15 @@ export class AgentOrchestrator {
       });
     }
 
+    // Yield conversationId to caller
+    const sysEvent: SystemEventMessage = {
+      type: 'system_event',
+      uuid: uuidv4() as `${string}-${string}-${string}-${string}-${string}`,
+      event: 'conversation_created',
+      conversationId: convId,
+    };
+    yield sysEvent;
+
     // Get existing conversation events
     const existingEvents = await this.eventStore.getEvents(convId);
 
@@ -199,24 +209,51 @@ export class AgentOrchestrator {
     return this.eventStore;
   }
 
+  // ── Compaction ──────────────────────────────────────────────
+
+  async compactConversation(
+    conversationId: string,
+    fromSequence: number,
+    toSequence: number,
+    providerId?: string,
+    model?: string,
+  ): Promise<string> {
+    const provider = providerId
+      ? this.providerRegistry.get(providerId)
+      : this.providerRegistry.getDefault();
+    if (!provider) throw new Error(`Provider not found`);
+
+    const compactionModel = model ?? this.defaultModel;
+    const engine = new LLMCompactionEngine(this.eventStore, provider, compactionModel);
+    return engine.compactRange(conversationId, fromSequence, toSequence);
+  }
+
   // ── Private Helpers ──────────────────────────────────────────
 
   private eventsToMessages(events: import('../event-store/types.js').ConversationEvent[]): InternalMessage[] {
     const messages: InternalMessage[] = [];
 
+    let lastCompactedSummary: string | undefined;
+
     for (const event of events) {
       if (event.isCompacted) {
-        // Use compacted summary
-        messages.push({
-          type: 'user',
-          uuid: uuidv4() as `${string}-${string}-${string}-${string}-${string}`,
-          message: {
-            role: 'user',
-            content: `[Previous conversation summary]: ${event.compactedSummary}`,
-          },
-        });
+        // Only emit the summary once per consecutive compacted group
+        if (event.compactedSummary && event.compactedSummary !== lastCompactedSummary) {
+          lastCompactedSummary = event.compactedSummary;
+          messages.push({
+            type: 'user',
+            uuid: uuidv4() as `${string}-${string}-${string}-${string}-${string}`,
+            message: {
+              role: 'user',
+              content: `[Previous conversation summary]: ${event.compactedSummary}`,
+            },
+          });
+        }
         continue;
       }
+
+      // Reset tracker when encountering a non-compacted event
+      lastCompactedSummary = undefined;
 
       if (event.type === 'user_message') {
         messages.push({

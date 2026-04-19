@@ -5,7 +5,7 @@
 export type {
   Message, MessageRole, MessageContent, TextContent, ToolUseContent,
   ToolResultContent, ThinkingContent, ContentBlock, TokenUsage, ModelInfo,
-  UserMessage, AssistantMessage, ProgressMessage, InternalMessage,
+  UserMessage, AssistantMessage, ProgressMessage, SystemEventMessage, InternalMessage,
 } from './types/messages.js';
 
 // Provider

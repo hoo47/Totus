@@ -116,4 +116,11 @@ export interface ProgressMessage {
   content: AssistantMessage;
 }
 
-export type InternalMessage = UserMessage | AssistantMessage | ProgressMessage;
+export interface SystemEventMessage {
+  type: 'system_event';
+  uuid: UUID;
+  event: 'conversation_created';
+  conversationId: string;
+}
+
+export type InternalMessage = UserMessage | AssistantMessage | ProgressMessage | SystemEventMessage;
