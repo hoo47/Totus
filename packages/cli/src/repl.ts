@@ -297,7 +297,10 @@ export class ReplService {
         }
       } catch (e: any) {
         if (e === REPROMPT) {
-          // File mention or slash command completed - re-prompt with pre-populated content
+          // Move cursor up and clear lines to avoid "You: You: You:" clutter.
+          // \x1b[1F moves to the beginning of the previous line, \x1b[2K clears it.
+          // We clear 2 lines: one for the Inquirer prompt line and one for the previous "You:" line.
+          process.stdout.write('\x1b[1F\x1b[2K\x1b[1F\x1b[2K');
           continue;
         }
         if (e?.code === 'ERR_USE_AFTER_CLOSE') {
