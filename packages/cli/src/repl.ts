@@ -344,7 +344,7 @@ export class ReplService {
         this.buildFileCache();
         const { search } = await import('@inquirer/prompts');
 
-        const choice = await this.withEscCancel(() => search({
+        const choice = await this.withEscCancel((signal) => search({
           message: 'File:',
           source: async (term) => {
             const cache = this.fileCache || [];
@@ -353,7 +353,7 @@ export class ReplService {
               : cache;
             return results.map(f => ({ value: '@' + f, name: f }));
           }
-        }));
+        }, { signal }));
 
         // Reconstruct line: [before @] + [@chosen/file] + [space] + [after cursor]
         this.pendingLineContent = beforeAt + choice + ' ' + afterCursor;
@@ -390,14 +390,14 @@ export class ReplService {
       try {
         const { search } = await import('@inquirer/prompts');
 
-        const choice = await this.withEscCancel(() => search({
+        const choice = await this.withEscCancel((signal) => search({
           message: 'Command:',
           source: async (term) => {
             const commands = ['/help', '/tools', '/model', '/compact', '/clear', '/exit', '/quit'];
             const filtered = term ? commands.filter(c => c.includes(term)) : commands;
             return filtered.map(c => ({ value: c }));
           }
-        }));
+        }, { signal }));
 
         this.pendingLineContent = choice;
       } catch (e) {
@@ -557,32 +557,32 @@ Available commands:
     try {
       const { search, select, password } = await import('@inquirer/prompts');
 
-      const modelType = await this.withEscCancel(() => select({
+      const modelType = await this.withEscCancel((signal) => select({
         message: '원하시는 모델의 환경을 선택해주세요 (API vs Local):',
         choices: [
           { name: '🌐 API Providers (Claude, Gemini, OpenAI)', value: 'api' },
           { name: '💻 Local Models (Ollama, LM Studio)', value: 'local' },
         ],
-      }));
+      }, { signal }));
 
       let targetProviderId = '';
       if (modelType === 'api') {
-        targetProviderId = await this.withEscCancel(() => select({
+        targetProviderId = await this.withEscCancel((signal) => select({
           message: '제공자(Provider)를 선택하세요:',
           choices: [
             { value: 'claude', name: 'Anthropic (Claude)' },
             { value: 'openai', name: 'OpenAI (GPT)' },
             { value: 'gemini', name: 'Google (Gemini)' }
           ]
-        }));
+        }, { signal }));
       } else {
-        targetProviderId = await this.withEscCancel(() => select({
+        targetProviderId = await this.withEscCancel((signal) => select({
           message: '로컬 모델 서버를 선택하세요:',
           choices: [
             { value: 'ollama', name: '🦙 Ollama' },
             { value: 'lmstudio', name: '🖥️  LM Studio' }
           ]
-        }));
+        }, { signal }));
       }
 
       const { ConfigService } = await import('./config.js');
@@ -612,7 +612,9 @@ Available commands:
       }
 
       if (!hasKey) {
-        const newKey = await this.withEscCancel(() => password({ message: `API Key 설정이 필요합니다. ${targetProviderId}의 비밀 키를 입력하세요:` }));
+        const newKey = await this.withEscCancel((signal) => password({
+          message: `API Key 설정이 필요합니다. ${targetProviderId}의 비밀 키를 입력하세요:`
+        }, { signal }));
         if (!newKey) throw new Error('cancelled');
 
         if (targetProviderId === 'openai') config.apiKeys.openai = newKey;
@@ -672,13 +674,13 @@ Available commands:
         value: { model: m.id, provider: provider.id }
       }));
 
-      const choice = await this.withEscCancel(() => search({
+      const choice = await this.withEscCancel((signal) => search({
         message: '변경할 모델을 고르세요:',
         source: async (term) => {
           const results = term ? formattedModels.filter(m => m.name.toLowerCase().includes(term.toLowerCase())) : formattedModels;
           return results;
         }
-      }));
+      }, { signal }));
 
       this.currentModel = choice.model;
       this.currentProviderId = choice.provider;
@@ -748,11 +750,11 @@ Available commands:
 
       p.log.info(chalk.cyan('처음과 끝 이벤트를 spacebar로 선택하세요 (정확히 2개):'));
 
-      const selected = await this.withEscCancel(() => checkbox({
+      const selected = await this.withEscCancel((signal) => checkbox({
         message: 'Compact 범위 선택 (spacebar로 시작/끝 선택, enter로 확인):',
         choices,
         required: true,
-      }));
+      }, { signal }));
 
       if (selected.length !== 2) {
         p.log.warn(chalk.yellow(`정확히 2개를 선택해야 합니다. (${selected.length}개 선택됨)`));
@@ -801,17 +803,18 @@ Available commands:
 
   /**
    * Helper to make Inquirer prompts cancellable via ESC key.
-   * Maps ESC to Ctrl+C (SIGINT) which Inquirer handles by throwing an exception.
+   * Uses AbortController to cancel the prompt without triggering global SIGINT.
    */
-  private async withEscCancel<T>(promptFn: () => Promise<T>): Promise<T> {
+  private async withEscCancel<T>(promptFn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
     const escHandler = (_char: string | undefined, key: any) => {
       if (key && key.name === 'escape') {
-        process.stdin.emit('keypress', '', { name: 'c', ctrl: true });
+        controller.abort();
       }
     };
     process.stdin.on('keypress', escHandler);
     try {
-      return await promptFn();
+      return await promptFn(controller.signal);
     } finally {
       process.stdin.removeListener('keypress', escHandler);
     }
