@@ -1,0 +1,11 @@
+{
+  "name": "@agent-platform/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "echo 'Web build - will be set up with Next.js'",
+    "dev": "echo 'Web dev - will be set up with Next.js'",
+    "test": "echo 'No tests yet'",
+    "clean": "rm -rf .next out"
+  }
+}
