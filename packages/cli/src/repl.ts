@@ -213,6 +213,11 @@ export class ReplService {
         if (!text) continue;
 
         if (await this.handleMetaCommand(text, options.agentId)) {
+          const lowerText = text.toLowerCase();
+          if (lowerText === '/model' || lowerText === '/compact') {
+            // Move up and clear 2 lines: the Inquirer remnants and the command input line (/model)
+            process.stdout.write('\x1b[1F\x1b[2K\x1b[1F\x1b[2K');
+          }
           continue;
         }
 
