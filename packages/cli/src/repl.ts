@@ -57,10 +57,9 @@ export class ReplService {
       terminal: true,
     });
 
-    this.rl.on('SIGINT', () => {
+    const handleSigint = () => {
       const now = Date.now();
       if (now - this.lastSigintTime < 1000) {
-        // Double Ctrl+C within 1 second → force exit
         p.outro('Goodbye!');
         process.exit(0);
       }
@@ -72,7 +71,13 @@ export class ReplService {
         p.outro('Goodbye!');
         process.exit(0);
       }
-    });
+    };
+
+    this.rl.on('SIGINT', handleSigint);
+
+    // If raw mode is somehow lost and OS triggers SIGINT signal on process:
+    process.removeAllListeners('SIGINT'); // Ensure our listener is the main one
+    process.on('SIGINT', handleSigint);
 
     // Prevent unexpected close from killing the app
     this.rl.on('close', () => {
@@ -108,6 +113,14 @@ export class ReplService {
           p.outro('Goodbye!');
           process.exit(0);
         }
+        return;
+      }
+
+      // Esc: clear line and return to initial state
+      if (key && key.name === 'escape') {
+        // Standard readline clear: Ctrl+U (start to cursor) + Ctrl+K (cursor to end)
+        this.rl.write(null, { ctrl: true, name: 'u' });
+        this.rl.write(null, { ctrl: true, name: 'k' });
         return;
       }
 
@@ -331,7 +344,7 @@ export class ReplService {
         this.buildFileCache();
         const { search } = await import('@inquirer/prompts');
 
-        const choice = await search({
+        const choice = await this.withEscCancel(() => search({
           message: 'File:',
           source: async (term) => {
             const cache = this.fileCache || [];
@@ -340,12 +353,12 @@ export class ReplService {
               : cache;
             return results.map(f => ({ value: '@' + f, name: f }));
           }
-        });
+        }));
 
         // Reconstruct line: [before @] + [@chosen/file] + [space] + [after cursor]
         this.pendingLineContent = beforeAt + choice + ' ' + afterCursor;
       } catch (e) {
-        // User cancelled - restore original line without the @
+        // User cancelled (including ESC) - restore original line without the @
         this.pendingLineContent = beforeAt + afterCursor;
       } finally {
         // Recreate readline & keypress handler for clean state
@@ -377,14 +390,14 @@ export class ReplService {
       try {
         const { search } = await import('@inquirer/prompts');
 
-        const choice = await search({
+        const choice = await this.withEscCancel(() => search({
           message: 'Command:',
           source: async (term) => {
             const commands = ['/help', '/tools', '/model', '/compact', '/clear', '/exit', '/quit'];
             const filtered = term ? commands.filter(c => c.includes(term)) : commands;
             return filtered.map(c => ({ value: c }));
           }
-        });
+        }));
 
         this.pendingLineContent = choice;
       } catch (e) {
@@ -544,32 +557,32 @@ Available commands:
     try {
       const { search, select, password } = await import('@inquirer/prompts');
 
-      const modelType = await select({
+      const modelType = await this.withEscCancel(() => select({
         message: '원하시는 모델의 환경을 선택해주세요 (API vs Local):',
         choices: [
-          { value: 'api', name: '☁️  API Models (Claude, OpenAI, Gemini)' },
-          { value: 'local', name: '💻 Local Models (Ollama, LM Studio)' }
-        ]
-      });
+          { name: '🌐 API Providers (Claude, Gemini, OpenAI)', value: 'api' },
+          { name: '💻 Local Models (Ollama, LM Studio)', value: 'local' },
+        ],
+      }));
 
       let targetProviderId = '';
       if (modelType === 'api') {
-        targetProviderId = await select({
+        targetProviderId = await this.withEscCancel(() => select({
           message: '제공자(Provider)를 선택하세요:',
           choices: [
             { value: 'claude', name: 'Anthropic (Claude)' },
             { value: 'openai', name: 'OpenAI (GPT)' },
             { value: 'gemini', name: 'Google (Gemini)' }
           ]
-        });
+        }));
       } else {
-        targetProviderId = await select({
+        targetProviderId = await this.withEscCancel(() => select({
           message: '로컬 모델 서버를 선택하세요:',
           choices: [
             { value: 'ollama', name: '🦙 Ollama' },
             { value: 'lmstudio', name: '🖥️  LM Studio' }
           ]
-        });
+        }));
       }
 
       const { ConfigService } = await import('./config.js');
@@ -599,7 +612,7 @@ Available commands:
       }
 
       if (!hasKey) {
-        const newKey = await password({ message: `API Key 설정이 필요합니다. ${targetProviderId}의 비밀 키를 입력하세요:` });
+        const newKey = await this.withEscCancel(() => password({ message: `API Key 설정이 필요합니다. ${targetProviderId}의 비밀 키를 입력하세요:` }));
         if (!newKey) throw new Error('cancelled');
 
         if (targetProviderId === 'openai') config.apiKeys.openai = newKey;
@@ -659,13 +672,13 @@ Available commands:
         value: { model: m.id, provider: provider.id }
       }));
 
-      const choice = await search({
+      const choice = await this.withEscCancel(() => search({
         message: '변경할 모델을 고르세요:',
         source: async (term) => {
           const results = term ? formattedModels.filter(m => m.name.toLowerCase().includes(term.toLowerCase())) : formattedModels;
           return results;
         }
-      });
+      }));
 
       this.currentModel = choice.model;
       this.currentProviderId = choice.provider;
@@ -735,11 +748,11 @@ Available commands:
 
       p.log.info(chalk.cyan('처음과 끝 이벤트를 spacebar로 선택하세요 (정확히 2개):'));
 
-      const selected = await checkbox({
+      const selected = await this.withEscCancel(() => checkbox({
         message: 'Compact 범위 선택 (spacebar로 시작/끝 선택, enter로 확인):',
         choices,
         required: true,
-      });
+      }));
 
       if (selected.length !== 2) {
         p.log.warn(chalk.yellow(`정확히 2개를 선택해야 합니다. (${selected.length}개 선택됨)`));
@@ -783,6 +796,24 @@ Available commands:
       this.createReadlineInterface();
       this.setupKeypressHandler();
       process.stdin.resume();
+    }
+  }
+
+  /**
+   * Helper to make Inquirer prompts cancellable via ESC key.
+   * Maps ESC to Ctrl+C (SIGINT) which Inquirer handles by throwing an exception.
+   */
+  private async withEscCancel<T>(promptFn: () => Promise<T>): Promise<T> {
+    const escHandler = (_char: string | undefined, key: any) => {
+      if (key && key.name === 'escape') {
+        process.stdin.emit('keypress', '', { name: 'c', ctrl: true });
+      }
+    };
+    process.stdin.on('keypress', escHandler);
+    try {
+      return await promptFn();
+    } finally {
+      process.stdin.removeListener('keypress', escHandler);
     }
   }
 }
